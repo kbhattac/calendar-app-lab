@@ -62,11 +62,16 @@ When a user authenticates, IAP uses a Google-managed service account to invoke C
      --role='roles/run.invoker' \
      --region=[REGION]
    ```
+3. **Handle Global IAM Propagation Delays (Fix for 403 Forbidden with Empty Authorization Header):**
+   Even after successfully applying the `run.invoker` binding, initial requests (such as a POST request to a form submit endpoint) might fail with a **403 Forbidden** error and a log message of `"Empty Authorization header value"` or `"The request was not authenticated"`.
+   - **Cause:** Google Cloud IAM policy changes take **7–10 minutes** to propagate globally to all Google Front End (GFE) edge proxies. During this brief period, some GFE edge servers will still operate on the cached, outdated policy.
+   - **Resolution:** Simply wait 10 minutes for global propagation. Additionally, clear your browser session cookies (using `https://[DOMAIN]/_gcp_iap/clear_login_cookie`) or use an **Incognito Window** to prevent browser-level session caching.
+
 
 ## 5. SSL Certificates & FQDNs (Fix for Error Code 52)
 IAP **requires** a Fully Qualified Domain Name (FQDN) in the `Host` header. Raw IP addresses will be rejected with **Error Code 52: Hostname/SSL certificate mismatch**.
 
-1. **Use a valid domain:** If you don't have a domain, use a wildcard DNS service like `nip.io` (e.g., `8-233-206-72.nip.io`).
+1. **Use a valid domain:** If you don't have a domain, use a wildcard DNS service like `nip.io` (e.g., `[IP-WITH-HYPHENS].nip.io`).
 2. **Include a Subject Alternative Name (SAN):** The SSL certificate MUST have the domain in the SAN extension. A Common Name (CN) alone is insufficient and will still cause Error 52.
    ```bash
    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
@@ -86,17 +91,33 @@ Even with a valid SAN certificate, IAP restricts redirects for security. You mus
      allowedDomainsSettings:
        enable: true
        domains:
-       - "[DOMAIN]" # e.g. 8-233-206-72.nip.io
+        - "[DOMAIN]" # e.g. [IP-WITH-HYPHENS].nip.io
    ```
 2. **Apply the settings:**
    ```bash
    gcloud iap settings set iap-settings.yaml --project=[PROJECT_ID] --resource-type=compute --service=[BACKEND_NAME]
    ```
 
+## 7. IAP User Authentication & Access (Fix for "You don't have access" Error)
+Even if a user has basic high-level roles like **Project Owner** or **Project Editor**, they will receive a **"You don't have access"** screen when visiting the application unless they are explicitly granted the IAP-secured Web App User role on the resource.
+
+1. **Grant IAP-secured Web App User Role:**
+   Explicitly grant the `roles/iap.httpsResourceAccessor` role to authorized users. If resource-level policy updates on individual backend services fail due to permissions, you can leverage project-level IAM Admin permissions to grant this role at the project level:
+   ```bash
+   gcloud projects add-iam-policy-binding [PROJECT_ID] \
+     --member='user:[USER_EMAIL]' \
+     --role='roles/iap.httpsResourceAccessor'
+   ```
+2. **Handle Cached "Access Denied" Sessions:**
+   Because browser cookies cache access decisions, a user might get a persistent "You don't have access" page even after the IAM role is granted.
+   - **Force Clear Login Cookie:** Instruct the user to visit `https://[DOMAIN]/_gcp_iap/clear_login_cookie` to reset their login session.
+   - **Incognito Mode:** Alternatively, test in a fresh Incognito window to force a clean authentication flow.
+
 ## Summary Checklist for Next Time:
 - [ ] OAuth Client configured with IAP Redirect URI.
 - [ ] Cloud Run deployed with internal/LB Ingress.
 - [ ] IAP Service Agent provisioned (via curl if needed) and granted `roles/run.invoker` on Cloud Run.
-- [ ] SAN-enabled SSL Certificate generated for a proper FQDN (like `nip.io`).
+- [ ] SAN-enabled SSL Certificate generated for a proper FQDN (like `[IP-WITH-HYPHENS].nip.io`).
 - [ ] Global Load Balancer configured with IAP enabled on the Backend Service.
 - [ ] FQDN explicitly added to the IAP Backend Service `allowed_domains` settings.
+- [ ] Authorized users (including Owners/Editors) explicitly granted `roles/iap.httpsResourceAccessor` at the project or backend service level.
